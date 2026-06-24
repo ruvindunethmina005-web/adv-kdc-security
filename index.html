@@ -68,12 +68,12 @@
         //  FIREBASE CONFIGURATION
         // ============================================================
         const firebaseConfig = {
-            apiKey: "AIzaSyAfKp8gWavPxo5EZafetpeADh7eeRHQQx0",
-            authDomain: "canteen-2d80d.firebaseapp.com",
-            projectId: "canteen-2d80d",
-            storageBucket: "canteen-2d80d.firebasestorage.app",
-            messagingSenderId: "835222412943",
-            appId: "1:835222412943:web:8db25547c45a1f0e1d5afa"
+            apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || "AIzaSyAfKp8gWavPxo5EZafetpeADh7eeRHQQx0",
+            authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || "canteen-2d80d.firebaseapp.com",
+            projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || "canteen-2d80d",
+            storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || "canteen-2d80d.firebasestorage.app",
+            messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || "835222412943",
+            appId: import.meta.env?.VITE_FIREBASE_APP_ID || "1:835222412943:web:8db25547c45a1f0e1d5afa"
         };
         
         let appConfig = firebaseConfig;
@@ -96,7 +96,8 @@
         let SYSTEM_USERS = {}; 
         let TODAY_TOKENS = new Set(); // FAST LOOKUP CACHE (Contains ALL employees for duplicate check)
         let RAW_TODAY_TOKENS = []; // Store full objects for UI filtering
-        let WEEKLY_PRICES = { Monday: 80, Tuesday: 80, Wednesday: 80, Thursday: 80, Friday: 80, Saturday: 80, Sunday: 80 };
+        let mealItems = {}; // Unified Meal Varieties
+        
         let html5QrcodeScanner = null;
         let scanDebounceTimer = null;
         let resultModalTimer = null;
@@ -105,11 +106,13 @@
         let currentUser = null; 
         let loggedInSysUser = null; 
         let dataLoaded = false;
-        const SYS_SESSION_KEY = `canteen_sys_session_${appId}`;
+        
+        // FIX: Synchronized session key
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
 
         // Auto Logout Timer
         let idleTime = 0;
-        const MAX_IDLE_TIME = 120; // 120 Seconds
+        const MAX_IDLE_TIME = 3600; // Increased to 1 hour
 
         let unsubscribeSecurity = null;
 
@@ -182,16 +185,16 @@
                 }
             });
 
-            // 3. Load Prices
-            onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'meal_prices'), (docSnap) => {
-                if (docSnap.exists() && docSnap.data().prices) {
-                    WEEKLY_PRICES = { ...WEEKLY_PRICES, ...docSnap.data().prices };
+            // 3. Load Global Meal Settings
+            onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen'), (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    mealItems = data.mealItems || data.alcMealItems || {};
+                    updateMealDropdown();
                 }
-            });
+            }, (err) => console.error("Settings fetch error:", err));
 
             // 4. Load TODAY'S TOKENS (Hot Cache for Speed)
-            // We listen to this globally so the "TODAY_TOKENS" set is always 100% up to date.
-            // This removes the need to query the database when scanning.
             const todayStr = getTodayStr();
             const tokenQuery = query(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), where('issuedDate', '==', todayStr));
             
@@ -222,6 +225,31 @@
         });
 
         initAuth();
+
+        function updateMealDropdown() {
+            const select = document.getElementById('kdc-meal-select');
+            if (!select) return;
+            select.innerHTML = '<option value="" disabled selected>-- Select Meal Variety --</option>';
+            Object.entries(mealItems).sort((a, b) => a[0].localeCompare(b[0])).forEach(([name, cost]) => {
+                select.innerHTML += `<option value="${name}">${name} (LKR ${parseFloat(cost).toFixed(2)})</option>`;
+            });
+        }
+
+        // --- KDC UI Mode Handling ---
+        window.handleKdcSelection = () => {
+            const val = document.getElementById('kdc-meal-select').value;
+            const scannerWrapper = document.getElementById('scanner-wrapper');
+            const placeholder = document.getElementById('scanner-placeholder');
+            
+            if (val) {
+                scannerWrapper.classList.remove('hidden');
+                placeholder.classList.add('hidden');
+                setTimeout(() => document.getElementById('sec-emp-id').focus(), 100);
+            } else {
+                scannerWrapper.classList.add('hidden');
+                placeholder.classList.remove('hidden');
+            }
+        };
 
         // --- IDLE TIMER ---
         setInterval(() => {
@@ -314,10 +342,7 @@
             // Refresh the list immediately to show ONLY this user's data
             updateRecentList();
             
-            setTimeout(() => {
-                const input = document.getElementById('sec-emp-id');
-                if(input) { input.value = ''; input.focus(); }
-            }, 500);
+            // Scanner is hidden until meal is selected
         }
 
         function showView(viewName) {
@@ -340,9 +365,7 @@
         // --- SCANNING LOGIC ---
         window.executeScan = (val) => {
             if (!val) return;
-            // Short verification message, usually instant
             showScanResultModal('VERIFYING...', 'Processing...', 'info');
-            // Small delay to allow UI to render the modal before heavy processing
             setTimeout(() => processSecurityScan(val), 50);
         };
 
@@ -351,7 +374,6 @@
                 if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
                 executeScan(event.target.value.trim().toUpperCase());
                 event.target.value = ''; 
-                // Don't focus immediately to allow modal to handle focus if needed, but here we keep focus for speed
                 event.target.focus();
             }
         };
@@ -360,7 +382,7 @@
             if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
             scanDebounceTimer = setTimeout(() => {
                 const val = event.target.value.trim().toUpperCase();
-                if (val.length >= 2) { // Usually barcodes are longer, avoiding accidental triggers
+                if (val.length >= 2) { 
                     executeScan(val);
                     event.target.value = ''; event.target.focus();
                 }
@@ -368,9 +390,11 @@
         };
 
         window.keepFocus = () => {
-            // Keep focus on input unless modal is user-interactive (dismiss button handles focus return)
             const modal = document.getElementById('result-modal');
-            if (modal.classList.contains('hidden')) {
+            const wrapper = document.getElementById('scanner-wrapper');
+            
+            // Only force focus if the scanner wrapper is visible and the modal is hidden
+            if (modal.classList.contains('hidden') && !wrapper.classList.contains('hidden')) {
                 setTimeout(() => {
                     const el = document.getElementById('sec-emp-id');
                     if(el && document.activeElement !== el) el.focus();
@@ -378,7 +402,7 @@
             }
         };
 
-        // --- CORE SECURITY LOGIC ---
+        // --- CORE KDC SECURITY LOGIC ---
         async function processSecurityScan(empId) {
             // --- 0. TIME RESTRICTION CHECK (After 11:00 AM block) ---
             const now = new Date();
@@ -392,25 +416,32 @@
             const emp = EMPLOYEES[empId];
             if(!emp) return showScanResultModal('ACCESS DENIED', 'Invalid Terminal ID', 'error');
 
-            // 2. CHECK SITE LOCATION (KDC/MOVEIT/KDC VAS ONLY)
-            // Assuming the field is 'site'. Normalize case just in case.
+            // 2. CHECK SITE LOCATION (BLOCK ALC, ALLOW KDC/MOVEIT/VAS)
             const site = emp.site ? emp.site.toUpperCase() : '';
-            if (site !== ('KDC') && site !== ('MOVEIT') && site !== ('KDC VAS')) {
-                return showScanResultModal('RESTRICTED ACCESS', `Site '${emp.site}' Not Authorized. KDC/MOVEIT/KDC VAS Only.`, 'error', emp.photoData);
+            const company = String(emp.companyName || emp.company || '').toUpperCase();
+            
+            if (site.includes('ALC') || company.includes('ALC')) {
+                return showScanResultModal('RESTRICTED ACCESS', `ALC Employees must use the dedicated ALC Terminal.`, 'error', emp.photoData);
+            }
+            if (site !== ('KDC') && site !== ('MOVEIT') && site !== ('KDC VAS') && !company.includes('KDC') && !company.includes('MOVEIT') && !company.includes('VAS')) {
+                return showScanResultModal('RESTRICTED ACCESS', `Site '${emp.site}' Not Authorized. Standard Personnel Only.`, 'error', emp.photoData);
             }
 
-            // 3. Check for Duplicate (Local Memory - Instant)
+            // 3. Enforce Meal Selection
+            const mealName = document.getElementById('kdc-meal-select')?.value;
+            if (!mealName) return showScanResultModal('MISSING SELECTION', 'Please select a meal variety from the dropdown.', 'warning');
+
+            // 4. Check for Duplicate (Local Memory - Instant)
             if (TODAY_TOKENS.has(emp.id)) {
                 return showScanResultModal('ALREADY ACTIVE', `${emp.name} has already accessed.`, 'warning', emp.photoData);
             }
 
-            // 4. APPROVED - Optimistic UI Update
-            // Show success immediately while we write to DB in background
-            showScanResultModal('ENTRY APPROVED', `${emp.name}`, 'success', emp.photoData);
+            const appliedCost = parseFloat(mealItems[mealName]) || 0;
+
+            // 5. APPROVED - Optimistic UI Update
+            showScanResultModal('ENTRY APPROVED', `${emp.name}\nAssigned: ${mealName}`, 'success', emp.photoData);
 
             const todayStr = getTodayStr();
-            const todayName = new Date().toLocaleDateString('en-US', {weekday: 'long'});
-            const todayPrice = WEEKLY_PRICES[todayName] || 80;
 
             try {
                 // Add to DB (Fire and forget from UI perspective)
@@ -418,18 +449,28 @@
                     tokenString: `TKN-${Math.floor(Math.random()*10000)}`,
                     empId: emp.id,
                     empName: emp.name,
-                    dept: emp.dept,
+                    dept: emp.dept || '',
                     company: emp.companyName || '',
                     account: emp.accountName || '',
                     site: emp.site || '-',
                     issuedDate: todayStr,
+                    date: todayStr,
                     status: 'ISSUED',
+                    mealRedeemed: false,
                     issuedAt: serverTimestamp(),
+                    markedAt: serverTimestamp(),
                     issuedBy: currentUser.uid,
                     issuedBySysUser: loggedInSysUser.username,
-                    costs: { total: todayPrice }
+                    markedBy: loggedInSysUser.username,
+                    mealName: mealName,
+                    costApplied: appliedCost,
+                    costs: { total: appliedCost }
                 });
-                // Note: The onSnapshot listener in loadData will catch this update and refresh the list automatically
+                
+                // Reset Selection to force next person to select intentionally
+                document.getElementById('kdc-meal-select').value = "";
+                handleKdcSelection(); // Re-hide scanner wrapper
+
             } catch (e) { 
                 console.error(e); 
                 showToast("System Error saving data", "error"); 
@@ -442,7 +483,6 @@
             if (!list) return;
             
             // FILTER: ONLY SHOW TOKENS ISSUED BY THIS LOGGED IN SYSTEM USER
-            // If loggedInSysUser is null (loading), result will be empty
             let myTokens = [];
             
             if (loggedInSysUser && RAW_TODAY_TOKENS.length > 0) {
@@ -465,16 +505,21 @@
                 const empPhoto = EMPLOYEES[data.empId]?.photoData;
                 const avatarHtml = empPhoto 
                     ? `<img src="${empPhoto}" class="h-10 w-10 rounded-full object-cover mr-4 border border-slate-200 dark:border-slate-600 shadow-sm">`
-                    : `<div class="h-10 w-10 rounded-full bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold text-sm mr-4 shadow-sm">${data.empName.charAt(0)}</div>`;
+                    : `<div class="h-10 w-10 rounded-full bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold text-sm mr-4 shadow-sm">${(data.empName || '?').charAt(0)}</div>`;
 
                 const timeStr = data.issuedAt ? new Date(data.issuedAt.seconds*1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Just now';
+                
+                // Include Meal Selection Tag
+                const mealLabel = data.mealName ? `<span class="text-[9px] uppercase font-bold text-blue-500 tracking-wider bg-blue-500/10 px-2 py-0.5 rounded ml-2 border border-blue-500/20">${data.mealName}</span>` : '';
 
                 el.innerHTML = `
                     <div class="flex items-center">
                         ${avatarHtml}
                         <div>
                             <div class="font-bold text-slate-800 dark:text-white text-sm">${data.empName}</div>
-                            <div class="text-xs text-slate-500 dark:text-slate-400 font-medium">${data.dept} | ${data.site || '-'}</div>
+                            <div class="text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center mt-0.5">
+                                ${data.dept || '-'} | ${data.site || '-'} ${mealLabel}
+                            </div>
                         </div>
                     </div>
                     <div class="text-right">
@@ -504,7 +549,11 @@
         window.closeResultModal = () => {
             if(resultModalTimer) clearTimeout(resultModalTimer);
             document.getElementById('result-modal').classList.add('hidden');
-            document.getElementById('sec-emp-id').focus();
+            
+            // Only focus if the scanner wrapper is visible
+            if (!document.getElementById('scanner-wrapper').classList.contains('hidden')) {
+                document.getElementById('sec-emp-id').focus();
+            }
         }
 
         window.showScanResultModal = (title, message, type, photoDataStr = null) => {
@@ -618,15 +667,36 @@
                 <div class="bg-white dark:bg-slate-800 rounded-3xl shadow-lg border border-slate-100 dark:border-slate-700 overflow-hidden">
                     <div class="bg-gradient-to-r from-blue-600 to-blue-700 p-8 text-center text-white relative overflow-hidden">
                         <i class="fas fa-shield-alt text-6xl mb-3 opacity-20 absolute -right-4 -bottom-4 transform rotate-12"></i>
-                        <h2 class="text-2xl font-extrabold relative z-10 tracking-tight">Check-in Terminal</h2>
-                        <p class="text-blue-100 text-xs font-medium mt-1">Scan Personnel ID for Entry</p>
+                        <h2 class="text-2xl font-extrabold relative z-10 tracking-tight">KDC Check-in Terminal</h2>
+                        <p class="text-blue-100 text-xs font-medium mt-1">Select Meal & Scan KDC ID</p>
                     </div>
-                    <div class="p-10 flex flex-col items-center bg-slate-50 dark:bg-slate-900/50">
-                        <div class="w-full relative mb-6">
-                            <div class="absolute inset-y-0 left-6 flex items-center pointer-events-none text-blue-400 text-xl"><i class="fas fa-barcode"></i></div>
-                            <input type="password" id="sec-emp-id" inputmode="none" placeholder="SCAN CODE" class="w-full pl-16 pr-6 py-6 border-2 border-slate-300 dark:border-slate-600 rounded-2xl bg-white dark:bg-slate-900 focus:bg-white dark:focus:bg-slate-800 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 font-mono text-center text-3xl outline-none transition scanner-input shadow-inner text-slate-800 dark:text-white" onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onblur="keepFocus()" autocomplete="off" autofocus>
+                    <div class="p-8 lg:p-10 flex flex-col items-center bg-slate-50 dark:bg-slate-900/50 min-h-[300px] justify-center relative">
+                        
+                        <!-- Meal Selection Dropdown -->
+                        <div id="kdc-dropdown-container" class="w-full mb-6 relative z-10">
+                            <div class="relative">
+                                <select id="kdc-meal-select" class="w-full border-2 border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-2xl px-5 py-4 text-slate-800 dark:text-slate-200 focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-bold appearance-none cursor-pointer shadow-inner" onchange="handleKdcSelection()">
+                                    <option value="" disabled selected>-- Select Meal Variety --</option>
+                                </select>
+                                <div class="absolute right-5 top-5 pointer-events-none text-slate-400"><i class="fas fa-chevron-down"></i></div>
+                            </div>
                         </div>
-                        <button onclick="startWebcamScanner()" class="w-full flex justify-center items-center text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-bold text-sm bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 border border-blue-200 dark:border-blue-800 px-6 py-4 rounded-xl transition shadow-sm"><i class="fas fa-camera mr-2"></i> Activate Camera</button>
+
+                        <!-- Scanner Input Wrapper (Hidden by default until meal selected) -->
+                        <div id="scanner-wrapper" class="w-full flex flex-col items-center hidden animate-fade-in relative z-10">
+                            <div class="w-full relative mb-6">
+                                <div class="absolute inset-y-0 left-6 flex items-center pointer-events-none text-blue-400 text-xl"><i class="fas fa-barcode"></i></div>
+                                <input type="password" id="sec-emp-id" inputmode="none" placeholder="SCAN CODE" class="w-full pl-16 pr-6 py-6 border-2 border-blue-400/60 dark:border-blue-600 rounded-2xl bg-white dark:bg-slate-900 focus:bg-white dark:focus:bg-slate-800 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 font-mono text-center text-3xl outline-none transition scanner-input shadow-inner text-slate-800 dark:text-white" onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onblur="keepFocus()" autocomplete="off">
+                            </div>
+                            <button onclick="startWebcamScanner()" class="w-full flex justify-center items-center text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-bold text-sm bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 border border-blue-200 dark:border-blue-800 px-6 py-4 rounded-xl transition shadow-sm"><i class="fas fa-camera mr-2"></i> Activate Camera</button>
+                        </div>
+                        
+                        <!-- Placeholder text shown when scanner is hidden -->
+                        <div id="scanner-placeholder" class="text-center py-6 animate-fade-in text-slate-400 dark:text-slate-500">
+                            <i class="fas fa-hand-pointer text-4xl mb-3 opacity-50"></i>
+                            <p class="text-sm font-bold">Awaiting meal selection to activate scanner.</p>
+                        </div>
+
                     </div>
                 </div>
 
@@ -660,8 +730,8 @@
                 <h2 id="res-title" class="text-2xl font-black text-white tracking-tight drop-shadow-sm"></h2>
             </div>
             <div class="p-8 text-center bg-slate-50 dark:bg-slate-900/50">
-                <p id="res-msg" class="text-slate-800 dark:text-white font-bold text-xl leading-relaxed"></p>
-                <button onclick="closeResultModal()" class="mt-6 w-full py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 font-bold rounded-xl text-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">Dismiss</button>
+                <p id="res-msg" class="text-slate-800 dark:text-white font-bold text-xl leading-relaxed whitespace-pre-line"></p>
+                <button onclick="closeResultModal()" class="mt-6 w-full py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 font-bold rounded-xl text-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors uppercase tracking-wider">Acknowledge</button>
             </div>
         </div>
     </div>
@@ -679,6 +749,3 @@
 
 </body>
 </html>
-
-
-```
