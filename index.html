@@ -67,7 +67,7 @@
         // ============================================================
         //  FIREBASE CONFIGURATION
         // ============================================================
-        const firebaseConfig = {
+        let firebaseConfig = {
             apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || "AIzaSyAfKp8gWavPxo5EZafetpeADh7eeRHQQx0",
             authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || "canteen-2d80d.firebaseapp.com",
             projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || "canteen-2d80d",
@@ -76,16 +76,15 @@
             appId: import.meta.env?.VITE_FIREBASE_APP_ID || "1:835222412943:web:8db25547c45a1f0e1d5afa"
         };
         
-        let appConfig = firebaseConfig;
-        if (typeof __firebase_config !== 'undefined') { 
+        if (typeof __firebase_config !== 'undefined' && __firebase_config) { 
             try {
-                appConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+                firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
             } catch (e) {
                 console.warn("Could not parse __firebase_config", e);
             }
         }
 
-        const app = initializeApp(appConfig);
+        const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         
@@ -94,9 +93,9 @@
         // --- Data Handling ---
         let EMPLOYEES = {};
         let SYSTEM_USERS = {}; 
-        let TODAY_TOKENS = new Set(); // FAST LOOKUP CACHE (Contains ALL employees for duplicate check)
+        let TODAY_TOKENS = new Set(); // FAST LOOKUP CACHE
         let RAW_TODAY_TOKENS = []; // Store full objects for UI filtering
-        let mealItems = {}; // Unified Meal Varieties
+        let mealItems = {}; // Global Meal Varieties
         
         let html5QrcodeScanner = null;
         let scanDebounceTimer = null;
@@ -106,15 +105,11 @@
         let currentUser = null; 
         let loggedInSysUser = null; 
         let dataLoaded = false;
-        
-        // FIX: Synchronized session key
-        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`; // Standardized session key
 
         // Auto Logout Timer
         let idleTime = 0;
-        const MAX_IDLE_TIME = 3600; // Increased to 1 hour
-
-        let unsubscribeSecurity = null;
+        const MAX_IDLE_TIME = 43200; // 12 Hours
 
         const views = {
             login: document.getElementById('view-login'), 
@@ -173,7 +168,9 @@
 
             // 1. Load Employees (Memory Cache)
             onSnapshot(query(collection(db, 'artifacts', appId, 'public', 'data', 'employees')), (snapshot) => {
-                snapshot.forEach(doc => EMPLOYEES[doc.id] = doc.data());
+                snapshot.forEach(doc => {
+                    EMPLOYEES[doc.id] = { id: doc.id, ...doc.data() }; 
+                });
             });
 
             // 2. Load System Users for Login
@@ -185,30 +182,29 @@
                 }
             });
 
-            // 3. Load Global Meal Settings
+            // 3. Fetch Global Meal Settings (Unified Varieties)
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen'), (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
                     mealItems = data.mealItems || data.alcMealItems || {};
                     updateMealDropdown();
                 }
-            }, (err) => console.error("Settings fetch error:", err));
+            }, (err) => console.error("Meal settings fetch error:", err));
 
             // 4. Load TODAY'S TOKENS (Hot Cache for Speed)
             const todayStr = getTodayStr();
             const tokenQuery = query(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), where('issuedDate', '==', todayStr));
             
             onSnapshot(tokenQuery, (snapshot) => {
-                TODAY_TOKENS.clear(); // Rebuild local cache for duplicate check
-                RAW_TODAY_TOKENS = []; // Rebuild raw list for UI
+                TODAY_TOKENS.clear(); 
+                RAW_TODAY_TOKENS = []; 
                 
                 snapshot.forEach(doc => {
                     const data = doc.data();
-                    TODAY_TOKENS.add(data.empId); // Add to fast lookup set
+                    if(data.empId) TODAY_TOKENS.add(data.empId);
                     RAW_TODAY_TOKENS.push({ id: doc.id, ...data });
                 });
 
-                // Update UI if on Security View
                 if (!views.security.classList.contains('hidden')) {
                     updateRecentList();
                 }
@@ -227,17 +223,17 @@
         initAuth();
 
         function updateMealDropdown() {
-            const select = document.getElementById('kdc-meal-select');
+            const select = document.getElementById('meal-select');
             if (!select) return;
-            select.innerHTML = '<option value="" disabled selected>-- Select Meal Variety --</option>';
+            select.innerHTML = '<option value="" disabled selected>-- Select KDC Meal Variety --</option>';
             Object.entries(mealItems).sort((a, b) => a[0].localeCompare(b[0])).forEach(([name, cost]) => {
                 select.innerHTML += `<option value="${name}">${name} (LKR ${parseFloat(cost).toFixed(2)})</option>`;
             });
         }
 
-        // --- KDC UI Mode Handling ---
-        window.handleKdcSelection = () => {
-            const val = document.getElementById('kdc-meal-select').value;
+        // --- Selection UI Mode Handling ---
+        window.handleMealSelection = () => {
+            const val = document.getElementById('meal-select').value;
             const scannerWrapper = document.getElementById('scanner-wrapper');
             const placeholder = document.getElementById('scanner-placeholder');
             
@@ -259,11 +255,10 @@
             }
         }, 1000);
 
-        const resetIdleTimer = () => { idleTime = 0; };
-        document.onmousemove = resetIdleTimer;
-        document.onkeypress = resetIdleTimer;
-        document.onclick = resetIdleTimer;
-        document.ontouchstart = resetIdleTimer;
+        window.resetIdleTimer = () => { idleTime = 0; };
+        ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll', 'input'].forEach(evt => {
+            document.addEventListener(evt, window.resetIdleTimer, true);
+        });
 
         // ============================================================
         //  LOGIN & ROUTING
@@ -273,7 +268,7 @@
             const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
             if (sessionStr) {
                 const session = JSON.parse(sessionStr);
-                const sysUser = SYSTEM_USERS[session.username];
+                const sysUser = SYSTEM_USERS[session.username] || session;
                 
                 // Master Admin
                 if (session.username === 'ADMIN' && session.date === getTodayStr()) {
@@ -282,7 +277,7 @@
                     return;
                 }
 
-                // Verify User and Role (Allow SECURITY and ADMIN only)
+                // Verify User and Role
                 if (session.date === getTodayStr() && sysUser && sysUser.status === 'ACTIVE') {
                     if (sysUser.role === 'SECURITY' || sysUser.role === 'ADMIN') {
                         loggedInSysUser = sysUser;
@@ -301,7 +296,6 @@
             const p = document.getElementById('login-pin').value.trim();
             const errEl = document.getElementById('login-error');
             
-            // Master Admin
             if (u === 'ADMIN' && p === 'ADMIN123') {
                 loggedInSysUser = { username: 'ADMIN', name: 'System Admin', role: 'ADMIN', status: 'ACTIVE' };
                 localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'ADMIN', date: getTodayStr() }));
@@ -314,7 +308,13 @@
             if (user && user.pin === p && user.status === 'ACTIVE') {
                 if (user.role === 'SECURITY' || user.role === 'ADMIN') {
                     loggedInSysUser = user;
-                    localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: u, date: getTodayStr() }));
+                    localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
+                        username: u, 
+                        name: user.name, 
+                        role: user.role, 
+                        status: user.status,
+                        date: getTodayStr() 
+                    }));
                     errEl.classList.add('hidden');
                     proceedToApp();
                 } else {
@@ -339,10 +339,7 @@
             navBar.classList.remove('hidden');
             roleDisplay.textContent = `${loggedInSysUser.name} (${loggedInSysUser.role})`;
             
-            // Refresh the list immediately to show ONLY this user's data
             updateRecentList();
-            
-            // Scanner is hidden until meal is selected
         }
 
         function showView(viewName) {
@@ -364,7 +361,9 @@
 
         // --- SCANNING LOGIC ---
         window.executeScan = (val) => {
+            if(window.resetIdleTimer) window.resetIdleTimer();
             if (!val) return;
+            
             showScanResultModal('VERIFYING...', 'Processing...', 'info');
             setTimeout(() => processSecurityScan(val), 50);
         };
@@ -386,14 +385,13 @@
                     executeScan(val);
                     event.target.value = ''; event.target.focus();
                 }
-            }, 10);
+            }, 50);
         };
 
         window.keepFocus = () => {
             const modal = document.getElementById('result-modal');
             const wrapper = document.getElementById('scanner-wrapper');
             
-            // Only force focus if the scanner wrapper is visible and the modal is hidden
             if (modal.classList.contains('hidden') && !wrapper.classList.contains('hidden')) {
                 setTimeout(() => {
                     const el = document.getElementById('sec-emp-id');
@@ -404,85 +402,111 @@
 
         // --- CORE KDC SECURITY LOGIC ---
         async function processSecurityScan(empId) {
-            // --- 0. TIME RESTRICTION CHECK (After 11:00 AM block) ---
+            
+            // 1. TIME RESTRICTION CHECK (Only for non-admins)
             const now = new Date();
-            const h = now.getHours();
-            const m = now.getMinutes();
-            if (h > 10 || (h === 10 && m >= 30)) {
+            if (now.getHours() > 10 || (now.getHours() === 10 && now.getMinutes() >= 30)) {
                 return showScanResultModal('PORTAL CLOSED', 'Scanning is not allowed after 10:30 AM.', 'error');
             }
 
-            // 1. Check if ID exists in Local Memory
-            const emp = EMPLOYEES[empId];
+            // 2. IDENTIFY EMPLOYEE
+            const emp = EMPLOYEES[empId] || Object.values(EMPLOYEES).find(e => e.empId === empId || e.employeeId === empId);
+            
             if(!emp) return showScanResultModal('ACCESS DENIED', 'Invalid Terminal ID', 'error');
 
-            // 2. CHECK SITE LOCATION (BLOCK ALC, ALLOW KDC/MOVEIT/VAS)
-            const site = emp.site ? emp.site.toUpperCase() : '';
-            const company = String(emp.companyName || emp.company || '').toUpperCase();
+            // 3. INACTIVE HARD-BLOCK
+            if (emp.status === 'INACTIVE') {
+                return showScanResultModal('ACCESS REVOKED', 'Employee profile is currently marked INACTIVE.', 'error', emp.photoData);
+            }
+
+            // 4. SMART FALLBACK VARIABLES 
+            // Checks for every possible way the data might have been named in the database
+            const empNameSafe = emp.name || emp.empName || emp.fullName || 'Unknown';
+            const deptSafe = emp.dept || emp.department || emp.assignedDepartment || '-';
+            const companySafe = emp.companyName || emp.company || emp.manpowerCompany || '-';
+            const accountSafe = emp.accountName || emp.account || '-';
+            const siteSafe = emp.site || emp.location || '-';
+
+            // 5. SITE RESTRICTION (ALC BLOCK, KDC/VAS/MOVEIT ALLOW)
+            const siteCheck = siteSafe.toUpperCase();
+            const companyCheck = companySafe.toUpperCase();
             
-            if (site.includes('ALC') || company.includes('ALC')) {
-                return showScanResultModal('RESTRICTED ACCESS', `ALC Employees must use the dedicated ALC Terminal.`, 'error', emp.photoData);
-            }
-            if (site !== ('KDC') && site !== ('MOVEIT') && site !== ('KDC VAS') && !company.includes('KDC') && !company.includes('MOVEIT') && !company.includes('VAS')) {
-                return showScanResultModal('RESTRICTED ACCESS', `Site '${emp.site}' Not Authorized. Standard Personnel Only.`, 'error', emp.photoData);
+            if (siteCheck.includes('ALC') || companyCheck.includes('ALC')) {
+                return showScanResultModal('RESTRICTED ACCESS', `ALC personnel must use ALC terminal. KDC assignments blocked.`, 'error', emp.photoData);
             }
 
-            // 3. Enforce Meal Selection
-            const mealName = document.getElementById('kdc-meal-select')?.value;
+            const isAuthorizedSite = siteCheck.includes('KDC') || companyCheck.includes('KDC') ||
+                                     siteCheck.includes('VAS') || companyCheck.includes('VAS') ||
+                                     siteCheck.includes('MOVEIT') || companyCheck.includes('MOVEIT');
+
+            if (!isAuthorizedSite) {
+                return showScanResultModal('UNAUTHORIZED LOCATION', `Only KDC, KDC VAS, and MOVEIT personnel are authorized at this terminal.`, 'error', emp.photoData);
+            }
+
+            // 6. MEAL SELECTION REQUIRED
+            const mealName = document.getElementById('meal-select')?.value;
             if (!mealName) return showScanResultModal('MISSING SELECTION', 'Please select a meal variety from the dropdown.', 'warning');
-
-            // 4. Check for Duplicate (Local Memory - Instant)
-            if (TODAY_TOKENS.has(emp.id)) {
-                return showScanResultModal('ALREADY ACTIVE', `${emp.name} has already accessed.`, 'warning', emp.photoData);
+            
+            // 7. DUPLICATE CHECK
+            const finalUid = emp.id || emp.empId || emp.employeeId || empId; 
+            if (TODAY_TOKENS.has(finalUid)) {
+                return showScanResultModal('ALREADY ACTIVE', `${empNameSafe} has already accessed.`, 'warning', emp.photoData);
             }
 
             const appliedCost = parseFloat(mealItems[mealName]) || 0;
 
-            // 5. APPROVED - Optimistic UI Update
-            showScanResultModal('ENTRY APPROVED', `${emp.name}\nAssigned: ${mealName}`, 'success', emp.photoData);
+            // 8. APPROVED - Optimistic UI
+            showScanResultModal('ENTRY APPROVED', `${empNameSafe}\nAssigned: ${mealName}`, 'success', emp.photoData);
 
             const todayStr = getTodayStr();
 
             try {
-                // Add to DB (Fire and forget from UI perspective)
-                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), {
-                    tokenString: `TKN-${Math.floor(Math.random()*10000)}`,
-                    empId: emp.id,
-                    empName: emp.name,
-                    dept: emp.dept || '',
-                    company: emp.companyName || '',
-                    account: emp.accountName || '',
-                    site: emp.site || '-',
-                    issuedDate: todayStr,
-                    date: todayStr,
+                // FIXED PAYLOAD: Bulletproof against undefined fields crashing Firestore
+                const payload = {
+                    tokenString: String(`TKN-${Math.floor(Math.random()*10000)}`),
+                    empId: String(finalUid),
+                    empName: String(empNameSafe),
+                    dept: String(deptSafe),
+                    company: String(companySafe),
+                    account: String(accountSafe),
+                    site: String(siteSafe),
+                    issuedDate: String(todayStr),
+                    date: String(todayStr),
                     status: 'ISSUED',
                     mealRedeemed: false,
                     issuedAt: serverTimestamp(),
                     markedAt: serverTimestamp(),
-                    issuedBy: currentUser.uid,
-                    issuedBySysUser: loggedInSysUser.username,
-                    markedBy: loggedInSysUser.username,
-                    mealName: mealName,
-                    costApplied: appliedCost,
-                    costs: { total: appliedCost }
+                    issuedBy: String(auth.currentUser?.uid || 'UNKNOWN'),
+                    issuedBySysUser: String(loggedInSysUser?.username || 'SYSTEM'),
+                    markedBy: String(loggedInSysUser?.username || 'SYSTEM'),
+                    mealName: String(mealName),
+                    costApplied: Number(appliedCost) || 0,
+                    costs: { total: Number(appliedCost) || 0 }
+                };
+
+                // Scrub any impossible undefineds directly (extra safety net)
+                Object.keys(payload).forEach(key => {
+                    if(payload[key] === undefined) payload[key] = '-';
                 });
+
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), payload);
                 
-                // Reset Selection to force next person to select intentionally
-                document.getElementById('kdc-meal-select').value = "";
-                handleKdcSelection(); // Re-hide scanner wrapper
+                // Reset Selection
+                document.getElementById('meal-select').value = "";
+                handleMealSelection(); 
 
             } catch (e) { 
-                console.error(e); 
-                showToast("System Error saving data", "error"); 
+                console.error("Firebase Crash:", e); 
+                // WILL NOW SHOW THE EXACT ERROR MESSAGE INSTEAD OF THE OLD TOAST
+                showScanResultModal('DATABASE REJECTED', `Error: ${e.message}`, 'error'); 
             }
         }
 
-        // Render List function (Called by the global listener)
+        // Render List function
         function updateRecentList() {
             const list = document.getElementById('sec-recent-list');
             if (!list) return;
             
-            // FILTER: ONLY SHOW TOKENS ISSUED BY THIS LOGGED IN SYSTEM USER
             let myTokens = [];
             
             if (loggedInSysUser && RAW_TODAY_TOKENS.length > 0) {
@@ -509,8 +533,7 @@
 
                 const timeStr = data.issuedAt ? new Date(data.issuedAt.seconds*1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Just now';
                 
-                // Include Meal Selection Tag
-                const mealLabel = data.mealName ? `<span class="text-[9px] uppercase font-bold text-blue-500 tracking-wider bg-blue-500/10 px-2 py-0.5 rounded ml-2 border border-blue-500/20">${data.mealName}</span>` : '';
+                const mealLabel = data.mealName ? `<span class="text-[9px] uppercase font-bold text-indigo-500 tracking-wider bg-indigo-500/10 px-2 py-0.5 rounded ml-2 border border-indigo-500/20">${data.mealName}</span>` : '';
 
                 el.innerHTML = `
                     <div class="flex items-center">
@@ -550,7 +573,6 @@
             if(resultModalTimer) clearTimeout(resultModalTimer);
             document.getElementById('result-modal').classList.add('hidden');
             
-            // Only focus if the scanner wrapper is visible
             if (!document.getElementById('scanner-wrapper').classList.contains('hidden')) {
                 document.getElementById('sec-emp-id').focus();
             }
@@ -581,10 +603,7 @@
             else if (type === 'error') bgEl.className = "bg-gradient-to-br from-red-500 to-red-600 rounded-t-3xl p-8 text-center relative overflow-hidden";
             else bgEl.className = "bg-gradient-to-br from-blue-500 to-blue-600 rounded-t-3xl p-8 text-center relative overflow-hidden";
             
-            // Clear existing timer if any
             if (resultModalTimer) clearTimeout(resultModalTimer);
-
-            // Close automatically after 4 seconds (4000ms) unless it's the "Verifying..." state
             if(title !== 'VERIFYING...') {
                 resultModalTimer = setTimeout(closeResultModal, 4000);
             }
@@ -667,16 +686,16 @@
                 <div class="bg-white dark:bg-slate-800 rounded-3xl shadow-lg border border-slate-100 dark:border-slate-700 overflow-hidden">
                     <div class="bg-gradient-to-r from-blue-600 to-blue-700 p-8 text-center text-white relative overflow-hidden">
                         <i class="fas fa-shield-alt text-6xl mb-3 opacity-20 absolute -right-4 -bottom-4 transform rotate-12"></i>
-                        <h2 class="text-2xl font-extrabold relative z-10 tracking-tight">KDC Check-in Terminal</h2>
-                        <p class="text-blue-100 text-xs font-medium mt-1">Select Meal & Scan KDC ID</p>
+                        <h2 class="text-2xl font-extrabold relative z-10 tracking-tight">Check-in Terminal</h2>
+                        <p class="text-blue-100 text-xs font-medium mt-1">Select Variety & Scan Personnel ID</p>
                     </div>
                     <div class="p-8 lg:p-10 flex flex-col items-center bg-slate-50 dark:bg-slate-900/50 min-h-[300px] justify-center relative">
                         
                         <!-- Meal Selection Dropdown -->
-                        <div id="kdc-dropdown-container" class="w-full mb-6 relative z-10">
+                        <div id="dropdown-container" class="w-full mb-6 relative z-10">
                             <div class="relative">
-                                <select id="kdc-meal-select" class="w-full border-2 border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-2xl px-5 py-4 text-slate-800 dark:text-slate-200 focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-bold appearance-none cursor-pointer shadow-inner" onchange="handleKdcSelection()">
-                                    <option value="" disabled selected>-- Select Meal Variety --</option>
+                                <select id="meal-select" class="w-full border-2 border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-2xl px-5 py-4 text-slate-800 dark:text-slate-200 focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-bold appearance-none cursor-pointer shadow-inner" onchange="handleMealSelection()">
+                                    <option value="" disabled selected>-- Select KDC Meal Variety --</option>
                                 </select>
                                 <div class="absolute right-5 top-5 pointer-events-none text-slate-400"><i class="fas fa-chevron-down"></i></div>
                             </div>
@@ -686,7 +705,7 @@
                         <div id="scanner-wrapper" class="w-full flex flex-col items-center hidden animate-fade-in relative z-10">
                             <div class="w-full relative mb-6">
                                 <div class="absolute inset-y-0 left-6 flex items-center pointer-events-none text-blue-400 text-xl"><i class="fas fa-barcode"></i></div>
-                                <input type="password" id="sec-emp-id" inputmode="none" placeholder="SCAN CODE" class="w-full pl-16 pr-6 py-6 border-2 border-blue-400/60 dark:border-blue-600 rounded-2xl bg-white dark:bg-slate-900 focus:bg-white dark:focus:bg-slate-800 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 font-mono text-center text-3xl outline-none transition scanner-input shadow-inner text-slate-800 dark:text-white" onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onblur="keepFocus()" autocomplete="off">
+                                <input type="password" id="sec-emp-id" inputmode="none" placeholder="SCAN ID BADGE" class="w-full pl-16 pr-6 py-6 border-2 border-blue-400/60 dark:border-blue-600 rounded-2xl bg-white dark:bg-slate-900 focus:bg-white dark:focus:bg-slate-800 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 font-mono text-center text-3xl outline-none transition scanner-input shadow-inner text-slate-800 dark:text-white" onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onblur="keepFocus()" autocomplete="off">
                             </div>
                             <button onclick="startWebcamScanner()" class="w-full flex justify-center items-center text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-bold text-sm bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 border border-blue-200 dark:border-blue-800 px-6 py-4 rounded-xl transition shadow-sm"><i class="fas fa-camera mr-2"></i> Activate Camera</button>
                         </div>
@@ -703,9 +722,9 @@
                 <!-- Live Feed Section -->
                 <div class="bg-white dark:bg-slate-800 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700 p-8 h-full min-h-[500px] flex flex-col relative">
                     <div class="flex justify-between items-center mb-6 border-b border-slate-100 dark:border-slate-700/50 pb-3">
-                        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center"><i class="fas fa-history mr-2"></i> Live Feed</h3>
+                        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center"><i class="fas fa-history mr-2"></i> Live Assign Feed</h3>
                         <div class="bg-blue-50 dark:bg-blue-900/30 px-4 py-2 rounded-lg border border-blue-100 dark:border-blue-800">
-                            <span class="text-[10px] font-bold text-blue-400 uppercase tracking-wider block">Entries Today</span>
+                            <span class="text-[10px] font-bold text-blue-400 uppercase tracking-wider block">Assigned Today</span>
                             <span id="sec-today-count" class="text-xl font-black text-blue-600 dark:text-blue-400">0</span>
                         </div>
                     </div>
@@ -743,9 +762,6 @@
             <div id="reader" class="w-full bg-[#0B1120] min-h-[350px]"></div>
         </div>
     </div>
-
-    <!-- Toast -->
-    <div id="toast" class="fixed bottom-6 right-6 translate-y-20 opacity-0 transition-all duration-300 z-[100]"><div class="flex items-center space-x-3 px-6 py-4 rounded-xl shadow-2xl font-medium border border-white/10"><i id="toast-icon" class="fas text-xl"></i><span id="toast-message"></span></div></div>
 
 </body>
 </html>
