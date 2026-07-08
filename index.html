@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+Close$0<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -65,22 +65,23 @@
         import { getFirestore, collection, addDoc, query, where, getDocs, updateDoc, doc, onSnapshot, serverTimestamp, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ============================================================
-        //  FIREBASE CONFIGURATION
+        //  FIREBASE CONFIGURATION (Firebase වින්‍යාසය)
         // ============================================================
+        // ස්ථාවර Firebase සැකසුම් (Import.meta ඉවත් කර ඇත)
         let firebaseConfig = {
-            apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || "AIzaSyAfKp8gWavPxo5EZafetpeADh7eeRHQQx0",
-            authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || "canteen-2d80d.firebaseapp.com",
-            projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || "canteen-2d80d",
-            storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || "canteen-2d80d.firebasestorage.app",
-            messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || "835222412943",
-            appId: import.meta.env?.VITE_FIREBASE_APP_ID || "1:835222412943:web:8db25547c45a1f0e1d5afa"
+            apiKey: "AIzaSyAfKp8gWavPxo5EZafetpeADh7eeRHQQx0",
+            authDomain: "canteen-2d80d.firebaseapp.com",
+            projectId: "canteen-2d80d",
+            storageBucket: "canteen-2d80d.firebasestorage.app",
+            messagingSenderId: "835222412943",
+            appId: "1:835222412943:web:8db25547c45a1f0e1d5afa"
         };
         
         if (typeof __firebase_config !== 'undefined' && __firebase_config) { 
             try {
                 firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
             } catch (e) {
-                console.warn("Could not parse __firebase_config", e);
+                console.warn("__firebase_config විග්‍රහ කළ නොහැක", e);
             }
         }
 
@@ -90,7 +91,7 @@
         
         const appId = (typeof __app_id !== 'undefined') ? __app_id : 'canteen-os-live';
 
-        // --- Data Handling ---
+        // --- Data Handling (දත්ත හැසිරවීම) ---
         let EMPLOYEES = {};
         let SYSTEM_USERS = {}; 
         let TODAY_TOKENS = new Set(); // FAST LOOKUP CACHE
@@ -101,15 +102,15 @@
         let scanDebounceTimer = null;
         let resultModalTimer = null;
 
-        // --- State ---
+        // --- State (තත්වය) ---
         let currentUser = null; 
         let loggedInSysUser = null; 
         let dataLoaded = false;
-        const SYS_SESSION_KEY = `ent_sys_session_${appId}`; // Standardized session key
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`; 
 
-        // Auto Logout Timer
+        // Auto Logout Timer (ස්වයංක්‍රීයව ඉවත් වීමේ කාලකය)
         let idleTime = 0;
-        const MAX_IDLE_TIME = 43200; // 12 Hours
+        const MAX_IDLE_TIME = 43200; // පැය 12 (12 Hours)
 
         const views = {
             login: document.getElementById('view-login'), 
@@ -119,7 +120,7 @@
         const navBar = document.getElementById('main-nav');
         const roleDisplay = document.getElementById('role-display');
         
-        // --- Theme Init ---
+        // --- Theme Init (තේමාව ආරම්භ කිරීම) ---
         window.initTheme = () => {
             const savedTheme = localStorage.getItem('canteen_theme');
             if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -148,7 +149,7 @@
 
         initTheme();
 
-        // --- Auth & Data Init ---
+        // --- Auth & Data Init (සත්‍යාපනය සහ දත්ත ආරම්භ කිරීම) ---
         const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -157,32 +158,36 @@
                     await signInAnonymously(auth);
                 }
             } catch (err) {
-                console.error("Auth Error:", err);
+                console.error("සත්‍යාපන දෝෂය (Auth Error):", err);
                 const loadingView = document.getElementById('view-loading');
-                if(loadingView) loadingView.innerHTML = `<div class="text-red-500 font-bold p-4">Connection Error: ${err.message}</div>`;
+                if(loadingView) loadingView.innerHTML = `<div class="text-red-500 font-bold p-4">සම්බන්ධතා දෝෂය: ${err.message}</div>`;
             }
         };
 
         const loadData = () => {
             if (!auth.currentUser) return;
 
-            // 1. Load Employees (Memory Cache)
+            // 1. Load Employees (සේවකයින් පූරණය කිරීම)
             onSnapshot(query(collection(db, 'artifacts', appId, 'public', 'data', 'employees')), (snapshot) => {
                 snapshot.forEach(doc => {
                     EMPLOYEES[doc.id] = { id: doc.id, ...doc.data() }; 
                 });
             });
 
-            // 2. Load System Users for Login
+            // 2. Load System Users for Login (පද්ධති පරිශීලකයින් පූරණය කිරීම)
             onSnapshot(query(collection(db, 'artifacts', appId, 'public', 'data', 'system_users')), (snapshot) => {
-                snapshot.forEach(doc => SYSTEM_USERS[doc.id] = doc.data());
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    // Username හිස් නම් doc.id භාවිතා කරමින් දෝෂ මගහරවයි
+                    SYSTEM_USERS[doc.id] = { username: data.username || doc.id, ...data }; 
+                });
                 if (!dataLoaded) {
                     dataLoaded = true;
                     checkAuthRouting();
                 }
             });
 
-            // 3. Fetch Global Meal Settings (Unified Varieties)
+            // 3. Fetch Global Meal Settings (ආහාර සැකසුම් පූරණය කිරීම)
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen'), (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
@@ -191,7 +196,7 @@
                 }
             }, (err) => console.error("Meal settings fetch error:", err));
 
-            // 4. Load TODAY'S TOKENS (Hot Cache for Speed)
+            // 4. Load TODAY'S TOKENS (අද දින ටෝකන් පූරණය කිරීම)
             const todayStr = getTodayStr();
             const tokenQuery = query(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), where('issuedDate', '==', todayStr));
             
@@ -261,7 +266,7 @@
         });
 
         // ============================================================
-        //  LOGIN & ROUTING
+        //  LOGIN & ROUTING (ප්‍රවේශ වීම සහ ගමන් කිරීම)
         // ============================================================
         
         function checkAuthRouting() {
@@ -296,6 +301,7 @@
             const p = document.getElementById('login-pin').value.trim();
             const errEl = document.getElementById('login-error');
             
+            // Master Admin
             if (u === 'ADMIN' && p === 'ADMIN123') {
                 loggedInSysUser = { username: 'ADMIN', name: 'System Admin', role: 'ADMIN', status: 'ACTIVE' };
                 localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'ADMIN', date: getTodayStr() }));
@@ -307,9 +313,9 @@
             const user = SYSTEM_USERS[u];
             if (user && user.pin === p && user.status === 'ACTIVE') {
                 if (user.role === 'SECURITY' || user.role === 'ADMIN') {
-                    loggedInSysUser = user;
+                    loggedInSysUser = { username: user.username || u, ...user };
                     localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
-                        username: u, 
+                        username: loggedInSysUser.username, 
                         name: user.name, 
                         role: user.role, 
                         status: user.status,
@@ -359,7 +365,7 @@
             setTimeout(() => toast.classList.add('translate-y-20', 'opacity-0'), 3000);
         }
 
-        // --- SCANNING LOGIC ---
+        // --- SCANNING LOGIC (ස්කෑන් කිරීමේ තාර්කිකත්වය) ---
         window.executeScan = (val) => {
             if(window.resetIdleTimer) window.resetIdleTimer();
             if (!val) return;
@@ -400,34 +406,33 @@
             }
         };
 
-        // --- CORE KDC SECURITY LOGIC ---
+        // --- CORE KDC SECURITY LOGIC (මූලික ආරක්ෂක තාර්කිකත්වය) ---
         async function processSecurityScan(empId) {
             
-            // 1. TIME RESTRICTION CHECK (Only for non-admins)
+            // 1. TIME RESTRICTION CHECK (කාල සීමාව පරීක්ෂා කිරීම)
             const now = new Date();
             if (now.getHours() > 10 || (now.getHours() === 10 && now.getMinutes() >= 30)) {
                 return showScanResultModal('PORTAL CLOSED', 'Scanning is not allowed after 10:30 AM.', 'error');
             }
 
-            // 2. IDENTIFY EMPLOYEE
+            // 2. IDENTIFY EMPLOYEE (සේවකයා හඳුනා ගැනීම)
             const emp = EMPLOYEES[empId] || Object.values(EMPLOYEES).find(e => e.empId === empId || e.employeeId === empId);
             
             if(!emp) return showScanResultModal('ACCESS DENIED', 'Invalid Terminal ID', 'error');
 
-            // 3. INACTIVE HARD-BLOCK
+            // 3. INACTIVE HARD-BLOCK (අක්‍රිය සේවකයින් අවහිර කිරීම)
             if (emp.status === 'INACTIVE') {
                 return showScanResultModal('ACCESS REVOKED', 'Employee profile is currently marked INACTIVE.', 'error', emp.photoData);
             }
 
-            // 4. SMART FALLBACK VARIABLES 
-            // Checks for every possible way the data might have been named in the database
+            // 4. SMART FALLBACK VARIABLES (දත්ත සුරක්ෂිත කිරීමේ විචල්‍යයන්)
             const empNameSafe = emp.name || emp.empName || emp.fullName || 'Unknown';
             const deptSafe = emp.dept || emp.department || emp.assignedDepartment || '-';
             const companySafe = emp.companyName || emp.company || emp.manpowerCompany || '-';
             const accountSafe = emp.accountName || emp.account || '-';
             const siteSafe = emp.site || emp.location || '-';
 
-            // 5. SITE RESTRICTION (ALC BLOCK, KDC/VAS/MOVEIT ALLOW)
+            // 5. SITE RESTRICTION (ස්ථාන සීමා කිරීම)
             const siteCheck = siteSafe.toUpperCase();
             const companyCheck = companySafe.toUpperCase();
             
@@ -443,25 +448,27 @@
                 return showScanResultModal('UNAUTHORIZED LOCATION', `Only KDC, KDC VAS, and MOVEIT personnel are authorized at this terminal.`, 'error', emp.photoData);
             }
 
-            // 6. MEAL SELECTION REQUIRED
+            // 6. MEAL SELECTION REQUIRED (ආහාර තෝරාගැනීම අනිවාර්යයි)
             const mealName = document.getElementById('meal-select')?.value;
             if (!mealName) return showScanResultModal('MISSING SELECTION', 'Please select a meal variety from the dropdown.', 'warning');
             
-            // 7. DUPLICATE CHECK
+            // 7. DUPLICATE CHECK (ටෝකන් ද්විත්ව පරීක්ෂාව)
             const finalUid = emp.id || emp.empId || emp.employeeId || empId; 
             if (TODAY_TOKENS.has(finalUid)) {
                 return showScanResultModal('ALREADY ACTIVE', `${empNameSafe} has already accessed.`, 'warning', emp.photoData);
             }
 
             const appliedCost = parseFloat(mealItems[mealName]) || 0;
+            const todayStr = getTodayStr();
+
+            // Username එක නිවැරදිව ලබාගැනීම
+            const activeSysUsername = loggedInSysUser ? (loggedInSysUser.username || 'SYSTEM') : 'SYSTEM';
 
             // 8. APPROVED - Optimistic UI
             showScanResultModal('ENTRY APPROVED', `${empNameSafe}\nAssigned: ${mealName}`, 'success', emp.photoData);
 
-            const todayStr = getTodayStr();
-
             try {
-                // FIXED PAYLOAD: Bulletproof against undefined fields crashing Firestore
+                // FIXED PAYLOAD: අසාධාරණ හිස් දත්ත මගහැරීමේ ක්‍රමවේදය
                 const payload = {
                     tokenString: String(`TKN-${Math.floor(Math.random()*10000)}`),
                     empId: String(finalUid),
@@ -477,40 +484,42 @@
                     issuedAt: serverTimestamp(),
                     markedAt: serverTimestamp(),
                     issuedBy: String(auth.currentUser?.uid || 'UNKNOWN'),
-                    issuedBySysUser: String(loggedInSysUser?.username || 'SYSTEM'),
-                    markedBy: String(loggedInSysUser?.username || 'SYSTEM'),
+                    issuedBySysUser: String(activeSysUsername),
+                    markedBy: String(activeSysUsername),
                     mealName: String(mealName),
                     costApplied: Number(appliedCost) || 0,
                     costs: { total: Number(appliedCost) || 0 }
                 };
 
-                // Scrub any impossible undefineds directly (extra safety net)
+                // Scrub any impossible undefineds directly (අතිරේක ආරක්ෂාව)
                 Object.keys(payload).forEach(key => {
                     if(payload[key] === undefined) payload[key] = '-';
                 });
 
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), payload);
                 
-                // Reset Selection
+                // Reset Selection (තේරීම යළි පිහිටුවීම)
                 document.getElementById('meal-select').value = "";
                 handleMealSelection(); 
 
             } catch (e) { 
-                console.error("Firebase Crash:", e); 
-                // WILL NOW SHOW THE EXACT ERROR MESSAGE INSTEAD OF THE OLD TOAST
+                console.error("Firebase දෝෂය (Crash):", e); 
+                // දෝෂය තිරයේ පෙන්වීම
                 showScanResultModal('DATABASE REJECTED', `Error: ${e.message}`, 'error'); 
             }
         }
 
-        // Render List function
+        // Render List function (ලැයිස්තුව යාවත්කාලීන කිරීම)
         function updateRecentList() {
             const list = document.getElementById('sec-recent-list');
             if (!list) return;
             
             let myTokens = [];
             
+            // Username භාවිතා කරමින් නිවැරදිව පෙරීම (Filtering fix)
             if (loggedInSysUser && RAW_TODAY_TOKENS.length > 0) {
-                myTokens = RAW_TODAY_TOKENS.filter(t => t.issuedBySysUser === loggedInSysUser.username);
+                const activeUsername = loggedInSysUser.username || '';
+                myTokens = RAW_TODAY_TOKENS.filter(t => t.issuedBySysUser === activeUsername);
             }
 
             list.innerHTML = '';
@@ -762,6 +771,9 @@
             <div id="reader" class="w-full bg-[#0B1120] min-h-[350px]"></div>
         </div>
     </div>
+
+    <!-- Toast -->
+    <div id="toast" class="fixed bottom-6 right-6 translate-y-20 opacity-0 transition-all duration-300 z-[100]"><div class="flex items-center space-x-3 px-6 py-4 rounded-xl shadow-2xl font-medium border border-white/10"><i id="toast-icon" class="fas text-xl"></i><span id="toast-message"></span></div></div>
 
 </body>
 </html>
